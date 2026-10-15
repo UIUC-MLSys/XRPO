@@ -1,0 +1,96 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# GSPO baseline -- Qwen3-1.7B
+#
+# Usage:
+#   cp launch_scripts/env.example.sh env.sh && edit it, then
+#   source env.sh && bash launch_scripts/gspo_baseline_qwen3_1.7b.sh
+#
+# Environment variables (see env.example.sh):
+#   DATA_DIR  directory holding the train/test parquet files   (default ./data)
+#   ICL_DIR   directory holding the merged ICL corpus files    (default ./icl_corpus)
+#   EXP_DIR   directory for checkpoints and validation dumps   (default ./experiments)
+#   GPU_NUM   number of GPUs on this node                      (default 4)
+#   HUGGING_FACE_HUB_TOKEN / WANDB_API_KEY / WANDB_ENTITY / WANDB_PROJECT
+#
+# A Slurm template is provided in launch_scripts/slurm_template.sbatch.
+# ---------------------------------------------------------------------------
+set -x
+set -o pipefail
+
+DATA_DIR="${DATA_DIR:-./data}"
+ICL_DIR="${ICL_DIR:-./icl_corpus}"
+EXP_DIR="${EXP_DIR:-./experiments}"
+GPU_NUM="${GPU_NUM:-4}"
+WANDB_PROJECT="${WANDB_PROJECT:-xrpo}"
+
+: "${HUGGING_FACE_HUB_TOKEN:?set HUGGING_FACE_HUB_TOKEN (see env.example.sh)}"
+: "${WANDB_API_KEY:?set WANDB_API_KEY, or drop wandb from trainer.logger}"
+export HUGGING_FACE_HUB_TOKEN WANDB_API_KEY WANDB_PROJECT
+
+EXPERIMENT_NAME="gspo_baseline_qwen3_1.7b"
+
+TRAIN_FILES="['$DATA_DIR/train_DAPO-Math-17k_sampled.parquet', '$DATA_DIR/train_deepcoder_10K.parquet']"
+TEST_FILES="['$DATA_DIR/test_amc/test.parquet', '$DATA_DIR/test_aime2024/test.parquet', '$DATA_DIR/test_aime2025/test.parquet', '$DATA_DIR/test_brumo2025/test.parquet', '$DATA_DIR/test_hmmt_feb_2025/test.parquet', '$DATA_DIR/test_deepcoder_50.parquet']"
+
+echo "Job started at $(date)"
+
+python -m verl.trainer.main_ppo  \
+    algorithm.adv_estimator=grpo \
+    data.train_files="$TRAIN_FILES" \
+    data.val_files="$TEST_FILES" \
+    data.train_batch_size=16 \
+    data.max_prompt_length=8192 \
+    data.max_response_length=16384 \
+    data.truncation=left \
+    data.enable_thinking=True \
+    actor_rollout_ref.model.path=Qwen/Qwen3-1.7B \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.actor.optim.lr=2e-6 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.kl_loss_coef=0.001 \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.fsdp_config.param_offload=True \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.offload_policy=False \
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=2 \
+    actor_rollout_ref.actor.clip_ratio_low=0.0003 \
+    actor_rollout_ref.actor.clip_ratio_high=0.0004 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \
+    actor_rollout_ref.rollout.n=12 \
+    actor_rollout_ref.rollout.enforce_eager=False \
+    actor_rollout_ref.rollout.free_cache_engine=False \
+    actor_rollout_ref.rollout.max_num_batched_tokens=81920 \
+    actor_rollout_ref.rollout.temperature=1 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.ref.ulysses_sequence_parallel_size=2 \
+    algorithm.kl_ctrl.kl_coef=0.001 \
+    trainer.critic_warmup=0 \
+    trainer.logger='[console,wandb]' \
+    trainer.project_name=$WANDB_PROJECT \
+    trainer.experiment_name=$EXPERIMENT_NAME \
+    trainer.n_gpus_per_node=$GPU_NUM \
+    trainer.nnodes=1 \
+    trainer.save_freq=30 \
+    trainer.test_freq=30 \
+    trainer.total_epochs=1 \
+    trainer.default_local_dir=$EXP_DIR/$EXPERIMENT_NAME \
+    trainer.validation_data_dir=$EXP_DIR/$EXPERIMENT_NAME/validation_data \
+    trainer.log_val_generations=10 \
+    trainer.max_actor_ckpt_to_keep=5 \
+    trainer.max_critic_ckpt_to_keep=5 \
+    actor_rollout_ref.rollout.val_kwargs.n=4 \
+    actor_rollout_ref.rollout.val_kwargs.do_sample=True \
+    actor_rollout_ref.rollout.val_kwargs.temperature=1 \
+    rollout_policy.policy_name=ppo_rollout_policy \
+    actor_rollout_ref.actor.policy_loss_type=gspo
+
+
+echo "Job finished at $(date)"

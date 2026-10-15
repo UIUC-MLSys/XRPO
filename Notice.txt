@@ -1,0 +1,12 @@
+XRPO
+Copyright 2025 The XRPO Authors
+
+This product includes software developed at
+Bytedance Ltd. and/or its affiliates (verl, https://github.com/volcengine/verl).
+Copyright 2023-2024 Bytedance Ltd. and/or its affiliates
+
+This product includes software developed by the Agentica Project
+(rllm, https://github.com/agentica-project/rllm).
+
+See THIRD_PARTY_NOTICES.md for the full list of vendored components,
+their upstream sources and licenses.
